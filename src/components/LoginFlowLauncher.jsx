@@ -10,8 +10,8 @@ export const LoginFlowLauncher = () => {
     user_id: "john.doe@example.com",
     session_id: "sess-abc-123",
     customer_reference_id: "player_0",
-    redirect_url: "https://www.google.com",
-    failure_url: "https://www.wikipedia.com",
+    redirect_url: "http://localhost:3000",
+    failure_url: "http://localhost:3000",
     environment: "DEV",
 
     // ✅ OPTIONAL (nullable)

@@ -1,45 +1,11 @@
 import React, { useEffect, useState } from "react";
-import { Spinner, Alert } from "react-bootstrap";
+import { Spinner } from "react-bootstrap";
 
-/* =====================================================
-   Constants
-===================================================== */
-const LOG_KEY = "login_flow_logs";
 const RUN_KEY = "login_flow_running";
-const STEP_DELAY_MS = 10_000; // 30 seconds
 
-/* =====================================================
-   Helpers
-===================================================== */
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-function clearLogs() {
-  localStorage.removeItem(LOG_KEY);
-}
-
-function log(step, data) {
-  const entry = {
-    ts: new Date().toISOString(),
-    step,
-    data,
-  };
-
-  console.log(`[LoginFlow] ${step}`, data ?? "");
-
-  const logs = JSON.parse(localStorage.getItem(LOG_KEY) || "[]");
-  logs.push(entry);
-  localStorage.setItem(LOG_KEY, JSON.stringify(logs));
-}
-
-/* =====================================================
-   Component
-===================================================== */
 export const LoginFlowExecutor = () => {
   const [error, setError] = useState(null);
 
-  /* ---------------------------------------------
-     Query params
-  --------------------------------------------- */
   const qs = new URLSearchParams(window.location.search);
 
   const subscriberId = qs.get("subscriber_id");
@@ -49,26 +15,16 @@ export const LoginFlowExecutor = () => {
   const redirectUrl = qs.get("redirect_url");
   const failureUrl = qs.get("failure_url");
 
-  // Optional params
   const firstName = qs.get("first_name");
   const lastName = qs.get("last_name");
   const phoneNumber = qs.get("phone_number");
-  const debug = qs.get("debug") === "1";
 
   const apiBase = "http://localhost:8080";
-
-  /* ---------------------------------------------
-     Main flow
-  --------------------------------------------- */
-  const STEP_DELAY_MS = debug ? 30_000 : 0;
 
   useEffect(() => {
     const runFlow = async () => {
       if (sessionStorage.getItem(RUN_KEY)) return;
       sessionStorage.setItem(RUN_KEY, "1");
-
-      clearLogs();
-      log("FLOW_START", { url: window.location.href });
 
       try {
         if (
@@ -81,45 +37,26 @@ export const LoginFlowExecutor = () => {
           throw new Error("Missing required login parameters");
         }
 
-        const isValidUrl = (u) => {
-          try {
-            new URL(u);
-            return true;
-          } catch {
-            return false;
-          }
-        };
-
-        if (!isValidUrl(redirectUrl) || !isValidUrl(failureUrl)) {
-          throw new Error("Invalid redirect URLs");
-        }
-
-        // STEP 1
-        log("STEP_1_FP_START");
+        /* STEP 1: Fingerprint */
         const fp = await window.FPClient.getFingerprint({
           subscriberId: String(subscriberId),
         });
-        log("STEP_1_FP_RESPONSE", fp);
 
         const { requestId } = fp;
-        if (!requestId) throw new Error("Fingerprint missing requestId");
+        if (!requestId) throw new Error("Fingerprint failed");
 
-        await sleep(STEP_DELAY_MS);
-
-        // STEP 2
+        /* STEP 2: Create fingerprint */
         const createPayload = {
           request_id: requestId,
           subscriber_id: Number(subscriberId),
           session_id: sessionId,
           user_id: userId,
-          redirect_uri: redirectUrl,
+          redirect_url: redirectUrl,
           customer_reference_id: customerReferenceId,
           ...(firstName && { first_name: firstName }),
           ...(lastName && { last_name: lastName }),
           ...(phoneNumber && { phone_number: phoneNumber }),
         };
-
-        log("STEP_2_CREATE_PAYLOAD", createPayload);
 
         const createResp = await fetch(`${apiBase}/login/fingerprint/create`, {
           method: "POST",
@@ -127,17 +64,9 @@ export const LoginFlowExecutor = () => {
           body: JSON.stringify(createPayload),
         });
 
-        const createText = await createResp.text();
-        log("STEP_2_CREATE_RESPONSE", {
-          status: createResp.status,
-          body: createText,
-        });
-
         if (!createResp.ok) throw new Error("Fingerprint create failed");
 
-        await sleep(STEP_DELAY_MS);
-
-        // STEP 3
+        /* STEP 3: Run checks */
         const checksResp = await fetch(`${apiBase}/login/run/checks`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -149,25 +78,64 @@ export const LoginFlowExecutor = () => {
             event_type: "loginflow",
             redirect_url: redirectUrl,
             failure_url: failureUrl,
-            explain: true
           }),
         });
 
         const checksResult = await checksResp.json();
-        log("STEP_3_CHECKS_RESULT", checksResult);
+        const decision = checksResult.decision;
 
-        if (checksResult.decision === "ALLOW") {
-          log("REDIRECT_SUCCESS", redirectUrl);
-          window.location.replace(redirectUrl);
-        } else {
-          log("REDIRECT_FAILURE", failureUrl);
-          window.location.replace(failureUrl);
-        }
-      } catch (err) {
-        log("FLOW_ERROR", err.message);
-        window.location.replace(failureUrl);
-      } finally {
         sessionStorage.removeItem(RUN_KEY);
+
+        /* -----------------------------------------
+          SUCCESS → ALLOW
+        ------------------------------------------ */
+        if (decision === "ALLOW") {
+          const successUrl = new URL(redirectUrl);
+          successUrl.searchParams.set("status", "success");
+          successUrl.searchParams.set("request_id", requestId);
+          successUrl.searchParams.set("session_id", sessionId);
+
+          window.location.replace(successUrl.toString());
+          return;
+        }
+
+        /* -----------------------------------------
+          STEP-UP → OTP
+        ------------------------------------------ */
+        if (decision === "OTP") {
+          const otpUrl = new URL(failureUrl);
+          otpUrl.searchParams.set("status", "failed");
+          otpUrl.searchParams.set("reason", "OTP");
+          otpUrl.searchParams.set("session_id", sessionId);
+
+          window.location.replace(otpUrl.toString());
+          return;
+        }
+
+        /* -----------------------------------------
+          HARD BLOCK → BLOCK
+        ------------------------------------------ */
+        if (decision === "BLOCK") {
+          const blockUrl = new URL(failureUrl);
+          blockUrl.searchParams.set("status", "failed");
+          blockUrl.searchParams.set("reason", "BLOCK");
+          blockUrl.searchParams.set("session_id", sessionId);
+
+          window.location.replace(blockUrl.toString());
+          return;
+        }
+
+        /* -----------------------------------------
+          Unknown fallback
+        ------------------------------------------ */
+        const fallbackUrl = new URL(failureUrl);
+        fallbackUrl.searchParams.set("status", "failed");
+        fallbackUrl.searchParams.set("reason", "UNKNOWN");
+        fallbackUrl.searchParams.set("session_id", sessionId);
+
+        window.location.replace(fallbackUrl.toString());
+      } catch (e) {
+        setError(e.message);
       }
     };
 
@@ -175,19 +143,16 @@ export const LoginFlowExecutor = () => {
     return () => sessionStorage.removeItem(RUN_KEY);
   }, []);
 
-  /* ---------------------------------------------
-     Minimal UI
-  --------------------------------------------- */
   return (
-    <div className="d-flex flex-column align-items-center justify-content-center vh-100">
-      {!error ? (
-        <>
-          <Spinner animation="border" />
-          <p className="mt-3 text-muted">Verifying your session…</p>
-        </>
-      ) : (
-        <Alert variant="danger">Login failed. Redirecting…</Alert>
-      )}
+    <div
+      className="d-flex align-items-center justify-content-center"
+      style={{ height: "100vh", background: "#f5f7fa" }}
+    >
+      <Spinner
+        animation="border"
+        role="status"
+        style={{ width: 60, height: 60 }}
+      />
     </div>
   );
 };
