@@ -3,6 +3,10 @@ import { Spinner } from "react-bootstrap";
 
 const RUN_KEY = "login_flow_running";
 
+// 🔥 ENV FLAG (default = true)
+const LOGIN_CHECKS_ENABLED =
+  process.env.REACT_APP_LOGIN_CHECKS_ENABLED !== "false";
+
 export const LoginFlowExecutor = () => {
   const [error, setError] = useState(null);
 
@@ -19,6 +23,9 @@ export const LoginFlowExecutor = () => {
   const lastName = qs.get("last_name");
   const phoneNumber = qs.get("phone_number");
 
+  // 🔥 Manual bypass via query param
+  const bypass = qs.get("bypass") === "1";
+
   const apiBase = "http://localhost:8080";
 
   useEffect(() => {
@@ -27,17 +34,29 @@ export const LoginFlowExecutor = () => {
       sessionStorage.setItem(RUN_KEY, "1");
 
       try {
-        if (
-          !subscriberId ||
-          !userId ||
-          !sessionId ||
-          !redirectUrl ||
-          !failureUrl
-        ) {
+        if (!subscriberId || !userId || !sessionId || !redirectUrl || !failureUrl) {
           throw new Error("Missing required login parameters");
         }
 
-        /* STEP 1: Fingerprint */
+        /* =====================================================
+           🔥 GLOBAL BYPASS
+        ===================================================== */
+        if (!LOGIN_CHECKS_ENABLED || bypass) {
+          const successUrl = new URL(redirectUrl);
+          successUrl.searchParams.set("status", "success");
+          successUrl.searchParams.set("request_id", "bypassed");
+          successUrl.searchParams.set("session_id", sessionId);
+
+          sessionStorage.removeItem(RUN_KEY);
+          window.location.replace(successUrl.toString());
+          return;
+        }
+
+        /* =====================================================
+           NORMAL FLOW
+        ===================================================== */
+
+        // STEP 1: Fingerprint
         const fp = await window.FPClient.getFingerprint({
           subscriberId: String(subscriberId),
         });
@@ -45,7 +64,7 @@ export const LoginFlowExecutor = () => {
         const { requestId } = fp;
         if (!requestId) throw new Error("Fingerprint failed");
 
-        /* STEP 2: Create fingerprint */
+        // STEP 2: Create fingerprint
         const createPayload = {
           request_id: requestId,
           subscriber_id: Number(subscriberId),
@@ -66,7 +85,7 @@ export const LoginFlowExecutor = () => {
 
         if (!createResp.ok) throw new Error("Fingerprint create failed");
 
-        /* STEP 3: Run checks */
+        // STEP 3: Run checks
         const checksResp = await fetch(`${apiBase}/login/run/checks`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -86,9 +105,10 @@ export const LoginFlowExecutor = () => {
 
         sessionStorage.removeItem(RUN_KEY);
 
-        /* -----------------------------------------
-          SUCCESS → ALLOW
-        ------------------------------------------ */
+        /* =====================================================
+           REDIRECT HANDLING
+        ===================================================== */
+
         if (decision === "ALLOW") {
           const successUrl = new URL(redirectUrl);
           successUrl.searchParams.set("status", "success");
@@ -99,9 +119,6 @@ export const LoginFlowExecutor = () => {
           return;
         }
 
-        /* -----------------------------------------
-          STEP-UP → OTP
-        ------------------------------------------ */
         if (decision === "OTP") {
           const otpUrl = new URL(failureUrl);
           otpUrl.searchParams.set("status", "failed");
@@ -112,9 +129,6 @@ export const LoginFlowExecutor = () => {
           return;
         }
 
-        /* -----------------------------------------
-          HARD BLOCK → BLOCK
-        ------------------------------------------ */
         if (decision === "BLOCK") {
           const blockUrl = new URL(failureUrl);
           blockUrl.searchParams.set("status", "failed");
@@ -125,16 +139,16 @@ export const LoginFlowExecutor = () => {
           return;
         }
 
-        /* -----------------------------------------
-          Unknown fallback
-        ------------------------------------------ */
+        // Fallback
         const fallbackUrl = new URL(failureUrl);
         fallbackUrl.searchParams.set("status", "failed");
         fallbackUrl.searchParams.set("reason", "UNKNOWN");
         fallbackUrl.searchParams.set("session_id", sessionId);
 
         window.location.replace(fallbackUrl.toString());
+
       } catch (e) {
+        sessionStorage.removeItem(RUN_KEY);
         setError(e.message);
       }
     };
@@ -148,11 +162,7 @@ export const LoginFlowExecutor = () => {
       className="d-flex align-items-center justify-content-center"
       style={{ height: "100vh", background: "#f5f7fa" }}
     >
-      <Spinner
-        animation="border"
-        role="status"
-        style={{ width: 60, height: 60 }}
-      />
+      <Spinner animation="border" role="status" style={{ width: 60, height: 60 }} />
     </div>
   );
 };

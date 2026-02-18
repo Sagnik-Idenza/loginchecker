@@ -14,20 +14,27 @@ export const LoginFlowLauncher = () => {
     failure_url: "http://localhost:3000",
     environment: "DEV",
 
-    // ✅ OPTIONAL (nullable)
+    // optional
     first_name: "John",
     last_name: "Doe",
     phone_number: "000-0000-0000",
+
+    // 🔥 NEW
+    bypass: false,
   });
 
   const update = (e) => {
-    setForm({ ...form, [e.target.name]: e.target.value });
+    const { name, value, type, checked } = e.target;
+
+    setForm({
+      ...form,
+      [name]: type === "checkbox" ? checked : value,
+    });
   };
 
   const submit = (e) => {
     e.preventDefault();
 
-    // ✅ Only include non-empty params
     const params = new URLSearchParams(
       Object.entries({
         subscriber_id: form.subscriber_id,
@@ -42,10 +49,12 @@ export const LoginFlowLauncher = () => {
         first_name: form.first_name,
         last_name: form.last_name,
         phone_number: form.phone_number,
-      }).filter(([_, v]) => v && v.trim() !== "")
+
+        // 🔥 Only include if true
+        ...(form.bypass && { bypass: "1" }),
+      }).filter(([_, v]) => v && String(v).trim() !== "")
     );
 
-    // 🔥 Silent redirect into executor
     navigate(`/login-flow?${params.toString()}`);
   };
 
@@ -128,10 +137,9 @@ export const LoginFlowLauncher = () => {
         <Form.Group className="mb-3">
           <Form.Label>Success Redirect URL</Form.Label>
           <Form.Control
-            name="redirect_uri"
+            name="redirect_url"
             value={form.redirect_url}
             onChange={update}
-            placeholder="https://app.example.com/login/callback"
             required
           />
         </Form.Group>
@@ -139,11 +147,21 @@ export const LoginFlowLauncher = () => {
         <Form.Group className="mb-4">
           <Form.Label>Failure Redirect URL</Form.Label>
           <Form.Control
-            name="failure_uri"
+            name="failure_url"
             value={form.failure_url}
             onChange={update}
-            placeholder="https://app.example.com/login/failed"
             required
+          />
+        </Form.Group>
+
+        {/* 🔥 BYPASS TOGGLE */}
+        <Form.Group className="mb-4">
+          <Form.Check
+            type="switch"
+            name="bypass"
+            label="Bypass Login Checks (Admin Override)"
+            checked={form.bypass}
+            onChange={update}
           />
         </Form.Group>
 
@@ -154,4 +172,3 @@ export const LoginFlowLauncher = () => {
     </Card>
   );
 };
-
